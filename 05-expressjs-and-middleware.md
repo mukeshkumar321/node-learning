@@ -9,7 +9,8 @@
 - [5. next()](#5-next)
 - [6. Custom Middleware](#6-custom-middleware)
 - [7. Error-Handling Middleware](#7-error-handling-middleware)
-- [8. Router](#8-router)
+- [8. Async Error Handling](#8-async-error-handling)
+- [9. Router](#9-router)
 
 ---
 
@@ -279,6 +280,44 @@ app.use(express.json());
 
 before the route.
 
+### Other built-in middleware
+
+Express ships with a few other built-in middleware functions besides
+`express.json()`.
+
+#### `express.urlencoded()`
+
+Parses form submissions sent as
+`application/x-www-form-urlencoded` (the default encoding for plain HTML
+`<form>` posts) and puts the result on `req.body`.
+
+```js
+app.use(express.urlencoded({ extended: true }));
+```
+
+```js
+app.post("/login", (req, res) => {
+  console.log(req.body); // { username: "...", password: "..." }
+});
+```
+
+#### `express.static()`
+
+Serves static files (HTML, CSS, images, client-side JS) directly from a
+folder, without you writing a route for each file.
+
+```js
+app.use(express.static("public"));
+```
+
+With a file at `public/logo.png`, a request to:
+
+```text
+GET /logo.png
+```
+
+is served automatically, with no matching route needed.
+
 #### `req.headers`
 
 Access HTTP headers:
@@ -483,6 +522,13 @@ app.use((req, res, next) => {
 The request will generally remain hanging because neither the next handler
 nor a response was reached.
 
+This is a **real production incident source**: the client (or a proxy/load
+balancer in front of your app) will simply wait until its own timeout is
+hit, then fail with a timeout error. There's no error, no crash, and
+nothing in your logs pointing at the cause — just a request that never
+finishes. Always make sure every code path either calls `next()` or sends a
+response.
+
 You can either:
 
 ```js
@@ -668,7 +714,84 @@ app.use(errorHandler);
 
 ---
 
-## 8. Router ⭐⭐⭐⭐⭐
+## 8. Async Error Handling ⭐⭐⭐⭐⭐
+
+This is a very common Express interview trap.
+
+### The problem
+
+In **Express 4 and earlier**, Express does **not** automatically catch
+errors thrown inside `async` middleware/route handlers. If an `async`
+function throws or its returned promise rejects, Express has no way of
+knowing — it isn't `await`ing your handler or listening for the rejection.
+
+```js
+app.get("/users/:id", async (req, res) => {
+  const user = await db.findUser(req.params.id); // throws
+
+  res.json(user);
+});
+```
+
+If `db.findUser` rejects, this becomes an **unhandled promise rejection**.
+It does **not** reach your `(err, req, res, next)` error-handling
+middleware. Depending on your Node version/setup, the request just hangs
+forever (no response sent), or the process logs an unhandled rejection
+warning/crashes — but the client never gets a proper error response.
+
+### The fix: try/catch + `next(err)`
+
+```js
+app.get("/users/:id", async (req, res, next) => {
+  try {
+    const user = await db.findUser(req.params.id);
+
+    res.json(user);
+  } catch (err) {
+    next(err);
+  }
+});
+```
+
+This is safe, but repeating `try/catch` in every handler gets tedious.
+
+### The fix: a generic `asyncHandler` wrapper
+
+A common pattern is to wrap async handlers once and reuse the wrapper
+everywhere:
+
+```js
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+```
+
+Usage:
+
+```js
+app.get(
+  "/users/:id",
+  asyncHandler(async (req, res) => {
+    const user = await db.findUser(req.params.id);
+
+    res.json(user);
+  }),
+);
+```
+
+If the wrapped function throws or rejects, `.catch(next)` forwards the
+error into your normal error-handling middleware.
+
+### Express 5
+
+**Express 5** changes this: it automatically catches errors from `async`
+handlers (rejected promises) and forwards them to `next()` for you, so the
+manual `try/catch`/`asyncHandler` pattern above is no longer required.
+However, plenty of production code still runs on Express 4, so knowing why
+this problem exists — and how to fix it — is a frequent interview question.
+
+---
+
+## 9. Router ⭐⭐⭐⭐⭐
 
 As your application grows, putting all routes inside `app.js` becomes
 difficult.

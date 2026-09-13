@@ -171,6 +171,25 @@ const query = "SELECT * FROM users WHERE id = ?";
 
 This helps prevent SQL injection.
 
+**Note:** placeholder syntax differs by driver — it isn't universal.
+
+- **MySQL** (`mysql`/`mysql2`) uses positional `?` placeholders:
+
+  ```js
+  connection.query("SELECT * FROM users WHERE id = ?", [id]);
+  ```
+
+- **PostgreSQL** (the `pg` driver) uses numbered `$1`, `$2`, ... placeholders
+  instead:
+
+  ```js
+  client.query("SELECT * FROM users WHERE id = $1", [id]);
+  ```
+
+Whichever driver/database you're using, the key point for interviews is
+the same: never concatenate user input into a query string — always let
+the driver bind parameters.
+
 ---
 
 ## 4. Transactions ⭐⭐⭐
@@ -228,9 +247,68 @@ Database remains in a valid state.
 
 Concurrent transactions don't improperly interfere with each other.
 
+Isolation is enforced through **isolation levels**, which trade off
+consistency against concurrency/performance:
+
+| Level | Prevents |
+| --- | --- |
+| Read Uncommitted | Nothing — allows dirty reads |
+| Read Committed | Dirty reads |
+| Repeatable Read | Dirty reads, non-repeatable reads |
+| Serializable | Dirty reads, non-repeatable reads, phantom reads |
+
+What each problem means:
+
+- **Dirty read** — reading data that another transaction has written but
+  not yet committed (and might roll back).
+- **Non-repeatable read** — reading the same row twice in one transaction
+  and getting different values because another transaction updated and
+  committed it in between.
+- **Phantom read** — re-running the same query twice in one transaction
+  and getting a different **set of rows** because another transaction
+  inserted/deleted matching rows in between.
+
+Higher isolation levels prevent more of these anomalies but generally
+reduce concurrency (more locking, more blocked/retried transactions).
+
 **D — Durability**
 
 Once committed, data survives failures.
+
+### Deadlocks
+
+A **deadlock** happens when two (or more) transactions each hold a lock the
+other needs, and each is waiting for the other to release it — neither can
+proceed.
+
+```text
+Transaction A: locks Row 1, waits for Row 2
+Transaction B: locks Row 2, waits for Row 1
+```
+
+Databases detect this (often via a wait-for graph or a lock-wait timeout)
+and resolve it by picking a **"victim"** transaction to abort and roll
+back, letting the other proceed. Applications should be prepared to catch
+a deadlock error and retry the aborted transaction. Consistently locking
+resources in the same order across your codebase reduces how often
+deadlocks occur.
+
+### Optimistic vs pessimistic locking
+
+Two common strategies for handling concurrent updates to the same data:
+
+- **Pessimistic locking** — lock the row upfront (e.g., `SELECT ... FOR
+  UPDATE`) before reading/modifying it, so no other transaction can touch
+  it until you're done. Safer under heavy contention, but reduces
+  concurrency since other transactions must wait.
+- **Optimistic locking** — don't lock anything upfront. Instead, read the
+  data along with a version number (or timestamp), and when writing back,
+  check that the version hasn't changed (`WHERE id = ? AND version = ?`).
+  If it has changed, someone else updated it first — reject/retry. Better
+  performance when conflicts are rare, since nothing blocks readers.
+
+Rule of thumb: use optimistic locking when conflicts are uncommon, and
+pessimistic locking when contention on the same rows is frequent.
 
 ### Interview questions
 
@@ -368,6 +446,27 @@ Useful when:
 - Horizontal scaling is important
 - Document-oriented data fits the application
 - You don't need relational joins for every operation
+
+### Eventual consistency & CAP theorem
+
+Many NoSQL databases favor horizontal scaling by distributing/replicating
+data across multiple nodes. The **CAP theorem** says a distributed system
+can only fully guarantee two of these three at once:
+
+- **C — Consistency**: every read gets the most recent write.
+- **A — Availability**: every request gets a (non-error) response.
+- **P — Partition tolerance**: the system keeps working despite network
+  partitions between nodes.
+
+Since network partitions can always happen in a distributed system, the
+real-world tradeoff is usually **C vs A**. Many NoSQL databases choose
+**availability** over strict consistency, meaning a read right after a
+write on a different node might return slightly stale data until
+replication catches up — this is called **eventual consistency**: the
+system guarantees that, given no new writes, all replicas will
+*eventually* converge to the same value, just not instantly. Traditional
+SQL databases more commonly prioritize strong consistency, sometimes at
+the cost of availability during a partition.
 
 ### Interview question
 

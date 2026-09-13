@@ -250,6 +250,40 @@ information such as:
 - error type
 - metadata
 
+### `error.cause` (ES2022)
+
+`Error` supports an optional `cause` option for chaining/wrapping errors
+while keeping the original error for debugging:
+
+```js
+try {
+  await db.connect();
+} catch (originalErr) {
+  throw new Error("Failed to start application", { cause: originalErr });
+}
+```
+
+`error.cause` gives you the original low-level error without losing the
+higher-level context of where it was re-thrown.
+
+### `Error.captureStackTrace`
+
+When extending `Error` with custom classes, `Error.captureStackTrace` keeps
+the stack trace clean by excluding the constructor call itself:
+
+```js
+class AppError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+```
+
+This is a V8-specific API and is commonly used in custom error base classes.
+
 ---
 
 ## 5. Global Error Handling
@@ -512,6 +546,29 @@ async function main() {
 | Process-level problem | Promise-level problem |
 | Usually treated as fatal | Should be handled/reviewed; production strategy may terminate |
 
+### Important behavior change (Node.js 15+) ⭐⭐⭐
+
+Since **Node.js 15**, unhandled promise rejections **terminate the process by
+default**. This is the `--unhandled-rejections=strict` behavior, which became
+the default instead of just printing a warning.
+
+```text
+Node.js < 15  → unhandled rejection logs a warning, process keeps running
+Node.js >= 15 → unhandled rejection throws and crashes the process (default)
+```
+
+This is a common interview trap: older answers that say "an unhandled
+rejection just logs a warning" are **outdated** for current Node.js versions.
+Always attach a `.catch()` or wrap `await` in `try/catch`.
+
+### A note on domains (legacy) ⚠️
+
+The old `domain` module was Node's original attempt at grouping async
+operations for error handling. It is **deprecated** and should **not** be
+used in new code — `async/await` with `try/catch`, plus
+`uncaughtException`/`unhandledRejection` handlers, fully replace its use
+cases.
+
 ---
 
 ## 9. Graceful Shutdown
@@ -562,6 +619,19 @@ process.on("SIGTERM", async () => {
   });
 });
 ```
+
+### `process.exitCode` vs `process.exit()`
+
+- `process.exitCode = 1` sets the exit code but lets the event loop finish
+  naturally — pending I/O (like an in-flight `console.log` write or a
+  response being flushed) completes before the process exits.
+- `process.exit()` exits **immediately**, which can truncate pending
+  writes/I/O and skip cleanup that hasn't finished yet.
+
+For graceful shutdown, prefer setting `process.exitCode` and letting the
+process exit naturally once resources are closed, only calling
+`process.exit()` directly when you need to force termination (e.g. after a
+timeout waiting for connections to close).
 
 ### Why is graceful shutdown important?
 

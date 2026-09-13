@@ -7,8 +7,10 @@
 - [3. async/await](#3-asyncawait)
 - [4. Promise.all()](#4-promiseall)
 - [5. Promise.allSettled()](#5-promiseallsettled)
-- [6. Sequential vs Parallel Execution](#6-sequential-vs-parallel-execution)
-- [7. Async Error Handling](#7-async-error-handling)
+- [6. Promise.race() and Promise.any()](#6-promiserace-and-promiseany)
+- [7. Sequential vs Parallel Execution](#7-sequential-vs-parallel-execution)
+- [8. Async Error Handling](#8-async-error-handling)
+- [9. Unhandled Rejections and Uncaught Exceptions](#9-unhandled-rejections-and-uncaught-exceptions)
 
 ---
 
@@ -62,9 +64,24 @@ callback(error, result)
 Nested callbacks become difficult to maintain:
 
 ```js
-getUser((user) => {
-  getOrders(user, (orders) => {
-    getPayment(orders, (payment) => {
+getUser((err, user) => {
+  if (err) {
+    console.error(err);
+    return;
+  }
+
+  getOrders(user, (err, orders) => {
+    if (err) {
+      console.error(err);
+      return;
+    }
+
+    getPayment(orders, (err, payment) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+
       console.log(payment);
     });
   });
@@ -276,7 +293,74 @@ When you need to know the outcome of **every operation**, even if some fail.
 
 ---
 
-## 6. Sequential vs Parallel Execution ⭐⭐⭐
+## 6. `Promise.race()` and `Promise.any()` ⭐⭐
+
+These are less commonly used than `Promise.all()`/`Promise.allSettled()`, but
+they come up often as follow-up interview questions.
+
+### `Promise.race()`
+
+Settles as soon as the **first** Promise settles — whether it fulfills or
+rejects.
+
+```js
+const result = await Promise.race([
+  fetchFromPrimary(),
+  fetchFromBackup(),
+]);
+```
+
+Use it for things like timeouts or "whichever source responds first":
+
+```js
+const timeout = (ms) =>
+  new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("Timed out")), ms)
+  );
+
+const data = await Promise.race([fetchData(), timeout(2000)]);
+```
+
+If the fastest Promise rejects, `Promise.race()` rejects with that reason,
+even if other Promises would have eventually fulfilled.
+
+### `Promise.any()`
+
+Settles as soon as the **first** Promise **fulfills**. It ignores rejections
+unless every Promise rejects.
+
+```js
+const result = await Promise.any([
+  fetchFromMirrorA(),
+  fetchFromMirrorB(),
+  fetchFromMirrorC(),
+]);
+```
+
+If **all** Promises reject, `Promise.any()` rejects with an
+`AggregateError` that contains all the individual rejection reasons:
+
+```js
+try {
+  await Promise.any([task1(), task2()]);
+} catch (error) {
+  console.log(error instanceof AggregateError); // true
+  console.log(error.errors); // array of individual errors
+}
+```
+
+### Summary
+
+| Method | Settles when | Typical use case |
+| --- | --- | --- |
+| `Promise.all()` | All fulfill, or first rejection | Need every result; all required |
+| `Promise.allSettled()` | All settle (success or failure) | Need every outcome, failures allowed |
+| `Promise.race()` | First settle (fulfil or reject) | Timeouts, "fastest wins" |
+| `Promise.any()` | First fulfillment, or all reject (`AggregateError`) | Fastest successful result, ignore failures |
+
+---
+
+## 7. Sequential vs Parallel Execution ⭐⭐⭐
 
 This is **very important**.
 
@@ -353,7 +437,7 @@ const [users, products] = await Promise.all([getUsers(), getProducts()]);
 
 ---
 
-## 7. Async Error Handling ⭐⭐⭐
+## 8. Async Error Handling ⭐⭐⭐
 
 ### With `async/await`
 
@@ -408,6 +492,54 @@ try {
 
 ---
 
+## 9. Unhandled Rejections and Uncaught Exceptions ⭐⭐⭐
+
+Sometimes an error escapes every `.catch()` and `try/catch` you wrote. Node
+gives you process-level hooks as a last line of defense.
+
+### `unhandledRejection`
+
+Fires when a Promise rejects and **no** `.catch()`/`try-catch` handled it:
+
+```js
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled rejection:", reason);
+});
+
+Promise.reject(new Error("Something failed"));
+```
+
+**Important:** since **Node.js 15**, an unhandled rejection **terminates the
+process by default** (it used to just print a warning). Treat
+`unhandledRejection` as a place to log and clean up, not as a substitute for
+proper error handling.
+
+### `uncaughtException`
+
+Fires when a synchronous error escapes all the way to the top without being
+caught:
+
+```js
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+  process.exit(1);
+});
+```
+
+`uncaughtException` leaves the process in a potentially inconsistent state,
+so the recommended practice is to log the error and exit rather than trying
+to keep running.
+
+### Interview question
+
+**Q: What happens to an unhandled Promise rejection in modern Node.js?**
+
+> By default, since Node.js 15, an unhandled Promise rejection crashes the
+> process (similar to an uncaught exception), instead of only logging a
+> warning as older versions did.
+
+---
+
 ## 🔥 Most Important Interview Concepts
 
 For this chapter, make sure you can explain these **without looking at
@@ -420,11 +552,14 @@ notes**:
 5. **Why use `async/await`?**
 6. **Does `await` block Node.js?**
 7. **`Promise.all()` vs `Promise.allSettled()`**
-8. **Sequential vs parallel execution**
-9. **When should you use `Promise.all()`?**
-10. **How do you handle errors with `async/await`?**
-11. **What happens when one Promise in `Promise.all()` rejects?**
-12. **Why does an `async` function return a Promise?**
+8. **`Promise.race()` vs `Promise.any()`**
+9. **Sequential vs parallel execution**
+10. **When should you use `Promise.all()`?**
+11. **How do you handle errors with `async/await`?**
+12. **What happens when one Promise in `Promise.all()` rejects?**
+13. **Why does an `async` function return a Promise?**
+14. **What happens to an unhandled Promise rejection?**
+15. **`unhandledRejection` vs `uncaughtException`**
 
 ### ⭐ One pattern you should remember
 

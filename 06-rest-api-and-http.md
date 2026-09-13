@@ -61,6 +61,38 @@ POST is generally not idempotent.
 
 Calling it twice can create two users.
 
+### Idempotency ⭐⭐⭐
+
+A very common interview question: **which HTTP methods are idempotent?**
+
+**Idempotent** means: making the same request one time or many times
+produces the same result on the server — the state doesn't change further
+after the first successful call.
+
+| Method | Idempotent? |
+| --- | --- |
+| GET | Yes |
+| HEAD | Yes |
+| OPTIONS | Yes |
+| PUT | Yes |
+| DELETE | Yes |
+| POST | No (generally) |
+| PATCH | No (generally) |
+
+Notes:
+
+- `GET`, `HEAD`, `OPTIONS` — read-only, so repeating them changes nothing.
+- `PUT` — replaces a resource with the same payload; doing it once or ten
+  times leaves the resource in the same final state.
+- `DELETE` — deleting an already-deleted resource still leaves it deleted
+  (even if the server returns `404` on the second call, the resource state
+  is unchanged).
+- `POST` — typically creates a new resource each time, so calling it twice
+  usually creates two resources. Not idempotent.
+- `PATCH` — depends on the semantics of the patch, but a partial update
+  (e.g., "increment counter by 1") produces a different result each time
+  it's called, so it's generally treated as **not** idempotent.
+
 ### PUT vs PATCH ⭐⭐⭐
 
 This is a common interview question.
@@ -129,6 +161,34 @@ DELETE /users/10 → 204 No Content
 | 302 | Found/temporary redirect |
 | 304 | Not Modified |
 
+#### ETags & conditional requests
+
+`304 Not Modified` usually works together with **ETags** — a version
+identifier the server attaches to a response so the client can ask "has
+this changed since I last fetched it?" instead of re-downloading it.
+
+```text
+Response:
+ETag: "33a64df551"
+
+Next request:
+If-None-Match: "33a64df551"
+```
+
+If the resource hasn't changed, the server replies `304 Not Modified` with
+no body, saving bandwidth. A similar mechanism exists based on timestamps:
+
+```text
+Response:
+Last-Modified: Wed, 21 Oct 2025 07:28:00 GMT
+
+Next request:
+If-Modified-Since: Wed, 21 Oct 2025 07:28:00 GMT
+```
+
+`If-None-Match` (ETag-based) is generally preferred since it's exact,
+while `If-Modified-Since` only has second-level precision.
+
 ### 4xx — Client Errors ⭐⭐⭐
 
 | Code | Meaning |
@@ -139,8 +199,39 @@ DELETE /users/10 → 204 No Content
 | 404 | Not Found |
 | 405 | Method Not Allowed |
 | 409 | Conflict |
-| 422 | Unprocessable Content |
+| 422 | Unprocessable Entity (also seen as "Unprocessable Content") |
 | 429 | Too Many Requests |
+
+#### 400 vs 422 ⭐⭐⭐
+
+Another common interview question.
+
+**400 Bad Request** — the request itself is malformed. The server can't
+even parse it.
+
+```text
+Invalid JSON syntax
+Missing required Content-Type
+Malformed request body
+```
+
+**422 Unprocessable Entity** — the request is well-formed (valid JSON,
+correct structure) but semantically invalid — it fails validation rules.
+
+```json
+{
+  "email": "not-an-email",
+  "age": -5
+}
+```
+
+This is syntactically valid JSON, so it's not a `400`. But it fails
+business/validation rules, so the server responds with `422`.
+
+**Interview answer**
+
+> 400 means the request couldn't be understood (malformed syntax), while
+> 422 means the request was understood but the data failed validation.
 
 #### 401 vs 403 ⭐⭐⭐
 
@@ -496,6 +587,39 @@ Application
   ↓
 Database
 ```
+
+#### 7. HATEOAS
+
+**HATEOAS** = Hypermedia As The Engine Of Application State.
+
+This is one of the constraints from Roy Fielding's original REST
+dissertation, and it's a common follow-up when an interviewer asks "is your
+API truly RESTful?"
+
+The idea: a response shouldn't just return data — it should also include
+**links** describing what the client can do next, so the client doesn't
+need to hard-code URLs elsewhere in the application.
+
+Example response with hypermedia links:
+
+```json
+{
+  "id": 101,
+  "name": "Rahul",
+  "status": "pending",
+  "links": [
+    { "rel": "self", "href": "/users/101", "method": "GET" },
+    { "rel": "cancel", "href": "/users/101/cancel", "method": "POST" },
+    { "rel": "orders", "href": "/users/101/orders", "method": "GET" }
+  ]
+}
+```
+
+In practice, most "REST" APIs (including most Node.js APIs you'll build in
+interviews and on the job) skip HATEOAS entirely and are really just
+JSON-over-HTTP APIs following REST-ish conventions, not fully RESTful in
+the strict Fielding sense. It's fine to say so — just be able to explain
+what the constraint means and that it's commonly omitted.
 
 ---
 

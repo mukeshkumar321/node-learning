@@ -108,6 +108,34 @@ Know:
 If your application still holds references to objects that are no longer
 needed, garbage collection cannot remove them.
 
+### V8 heap limits and `--max-old-space-size`
+
+V8 (the JS engine Node.js uses) has a default heap size limit. If your
+application legitimately needs more memory (e.g. large in-memory
+processing), you can raise it:
+
+```bash
+node --max-old-space-size=4096 server.js
+```
+
+This sets the old-space heap limit to ~4GB. It doesn't "add" memory — it
+just changes when V8 decides to throw `JavaScript heap out of memory`. Don't
+use it to paper over a real memory leak; use it only when the workload
+genuinely needs a larger heap.
+
+### Profiling tools
+
+Know these by name for interviews:
+
+- `node --prof` — built-in V8 CPU profiler, produces a log you process with
+  `node --prof-process`.
+- `node --inspect` — opens the V8 Inspector protocol so you can attach
+  Chrome DevTools for CPU/heap profiling and debugging.
+- [`clinic.js`](https://clinicjs.org/) — a suite of tools (`clinic doctor`,
+  `clinic flame`, `clinic bubbleprof`) for diagnosing performance issues.
+- [`0x`](https://github.com/davidmarkclements/0x) — generates flamegraphs
+  from a single command to visualize where CPU time is spent.
+
 ---
 
 ## 4. Caching ⭐⭐⭐
@@ -235,6 +263,46 @@ Process
 
 This reduces memory usage.
 
+### `pipe()` example with backpressure
+
+```js
+const fs = require("fs");
+
+const readStream = fs.createReadStream("large-file.txt");
+const writeStream = fs.createWriteStream("copy.txt");
+
+readStream.pipe(writeStream);
+```
+
+`pipe()` automatically handles **backpressure**: if `writeStream` can't
+keep up with the incoming data, it pauses `readStream` until the writable
+side drains, instead of buffering everything in memory.
+
+### `pipeline()` from `stream/promises`
+
+`pipeline()` is the preferred modern approach because it also handles error
+propagation and cleanup for you:
+
+```js
+const { pipeline } = require("stream/promises");
+const fs = require("fs");
+const zlib = require("zlib");
+
+async function compressFile() {
+  await pipeline(
+    fs.createReadStream("large-file.txt"),
+    zlib.createGzip(),
+    fs.createWriteStream("large-file.txt.gz")
+  );
+
+  console.log("File compressed successfully");
+}
+```
+
+If any stream in the chain errors or closes early, `pipeline()` destroys
+the other streams and rejects the returned Promise — something plain
+`pipe()` doesn't do for you.
+
 **Interview questions:**
 
 - What are streams in Node.js?
@@ -242,6 +310,7 @@ This reduces memory usage.
 - What is backpressure?
 - Difference between readable and writable streams?
 - What is a Transform stream?
+- Why prefer `pipeline()` over manually chaining `pipe()` calls?
 
 ---
 
@@ -283,6 +352,51 @@ Example use cases:
 > Worker Threads are mainly useful for CPU-intensive JavaScript work that
 > would otherwise block the event loop.
 
+### Minimal `worker_threads` example
+
+`main.js` — creates a worker and passes data via `workerData`:
+
+```js
+const { Worker } = require("worker_threads");
+
+function runWorker(number) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker("./worker.js", {
+      workerData: { number },
+    });
+
+    worker.on("message", resolve);
+    worker.on("error", reject);
+    worker.on("exit", (code) => {
+      if (code !== 0) {
+        reject(new Error(`Worker stopped with exit code ${code}`));
+      }
+    });
+  });
+}
+
+runWorker(40).then((result) => {
+  console.log("Result:", result);
+});
+```
+
+`worker.js` — does the CPU-bound work and reports back with `postMessage`:
+
+```js
+const { parentPort, workerData } = require("worker_threads");
+
+function fib(n) {
+  return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+
+const result = fib(workerData.number);
+
+parentPort.postMessage(result);
+```
+
+The main thread stays responsive to other requests while `worker.js` runs
+the expensive `fib()` calculation on a separate thread.
+
 ---
 
 ## 8. Cluster ⭐⭐⭐
@@ -321,6 +435,55 @@ Basic architecture:
 
 You should be able to explain this difference in an interview.
 
+### Minimal `cluster` example
+
+```js
+const cluster = require("cluster");
+const http = require("http");
+const os = require("os");
+
+if (cluster.isPrimary) {
+  const numCPUs = os.cpus().length;
+
+  console.log(`Primary ${process.pid} forking ${numCPUs} workers`);
+
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+
+  cluster.on("exit", (worker, code, signal) => {
+    console.log(`Worker ${worker.process.pid} died, forking a replacement`);
+    cluster.fork();
+  });
+} else {
+  // Workers share the same listening port
+  http
+    .createServer((req, res) => {
+      res.end(`Handled by worker ${process.pid}`);
+    })
+    .listen(3000);
+
+  console.log(`Worker ${process.pid} started`);
+}
+```
+
+The primary process forks one worker per CPU core; the OS load-balances
+incoming connections across the workers, which all listen on the same port.
+
+### PM2 as a production alternative
+
+In production, most teams reach for a process manager like
+[**PM2**](https://pm2.keymetrics.io/) instead of hand-rolling `cluster`
+logic. PM2 handles forking one process per core, restarting crashed
+workers, log management, and zero-downtime reloads:
+
+```bash
+pm2 start server.js -i max
+```
+
+`-i max` tells PM2 to run it in cluster mode across all available CPU
+cores, without you writing any `cluster.fork()` code yourself.
+
 ---
 
 ## 9. Horizontal Scaling ⭐⭐⭐
@@ -358,6 +521,22 @@ More CPU / RAM
               Database
 ```
 
+### Sticky sessions (session affinity)
+
+When load-balancing **WebSocket** connections (or anything relying on
+in-memory session state) across multiple processes/instances, a client
+needs to keep talking to the **same** server/worker for the life of the
+connection — otherwise the connection or session context breaks.
+
+This is handled with **sticky sessions**: the load balancer routes a given
+client to the same backend process consistently (commonly via a cookie or
+source IP hash). It's a common gotcha with `cluster` + WebSockets/Socket.IO,
+since by default connections can land on any worker.
+
+The alternative to sticky sessions is keeping state out of the process
+entirely (e.g. a shared Redis pub/sub adapter for Socket.IO), which is
+generally preferred because it keeps instances stateless.
+
 **Interview questions:**
 
 - What is horizontal scaling?
@@ -365,6 +544,7 @@ More CPU / RAM
 - How would you scale a Node.js application?
 - Why should horizontally scaled applications generally be stateless?
 - Where would you store sessions when you have multiple Node.js servers?
+- What are sticky sessions, and why do they matter for WebSockets?
 
 ---
 

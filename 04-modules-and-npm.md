@@ -308,6 +308,17 @@ const express = require("express");
 Node looks for the installed package through `node_modules` and its package
 metadata.
 
+### What is `node_modules`?
+
+`node_modules` is the directory where installed packages actually live on
+disk. When you run `npm install`, packages are downloaded into
+`node_modules`, and Node's module resolution algorithm walks up through
+`node_modules` directories (starting from the requiring file's own folder
+and moving up toward the filesystem root) until it finds a match. This is
+also why `node_modules` is normally excluded from version control — it's a
+derived artifact that can be recreated from `package.json` /
+`package-lock.json`.
+
 ### Module caching
 
 Once a CommonJS module is loaded, Node caches it.
@@ -353,6 +364,29 @@ true
 To avoid repeatedly loading and executing the same module, improving
 performance and preserving module state.
 
+### Caching is keyed by resolved file path, not package name
+
+Node's module cache key is the **fully resolved absolute file path**, not
+the package name you typed in `require()`. This matters because it means two
+`require("some-package")` calls can load **different instances** of what
+looks like "the same" module if they resolve to different files on disk —
+for example:
+
+- Nested `node_modules` folders (a dependency ships its own copy of a
+  package instead of sharing the top-level one)
+- `npm link` / symlinked packages resolving to a path outside the project's
+  own `node_modules`
+
+```text
+/project/node_modules/some-lib          ← instance A
+/project/node_modules/dep/node_modules/some-lib  ← instance B (different file path)
+```
+
+If `some-lib` keeps module-level state (a singleton, a cache, a connection
+pool), instance A and instance B are **not the same object**, even though
+they're "the same package" — a classic source of "why is my singleton
+state duplicated?" bugs.
+
 ---
 
 ## 6. npm
@@ -379,6 +413,15 @@ This typically:
 2. Places it in `node_modules`
 3. Records it in `package.json`
 4. Updates the lockfile
+
+### What is `package-lock.json`?
+
+`package.json` records dependency ranges like `^5.1.0`, which can resolve to
+different exact versions over time as new releases come out. `package-lock.json`
+locks in the **exact resolved version** (and the resolved versions of every
+transitive dependency) that was installed. Committing it ensures that
+`npm install` produces the **same dependency tree** on every machine and in
+CI, not just something compatible with the version ranges.
 
 ### Important commands
 

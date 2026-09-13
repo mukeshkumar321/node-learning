@@ -12,6 +12,7 @@
 - [8. XSS](#8-xss)
 - [9. Rate Limiting](#9-rate-limiting)
 - [10. Input Validation](#10-input-validation)
+- [11. HTTPS & Security Headers](#11-https--security-headers)
 
 ---
 
@@ -149,6 +150,47 @@ Therefore:
 
 - ❌ Don't put passwords in JWT.
 - ❌ Don't put sensitive information in the payload.
+
+### Algorithm confusion attacks
+
+A well-known JWT vulnerability class. Two things to guard against:
+
+- **`alg: none`** — the JWT spec technically allows an "unsecured" token
+  with no signature. Never accept `alg: none` when verifying a token; a
+  poorly configured verifier might treat it as valid.
+- **RS256/HS256 confusion** — if your server expects tokens signed with
+  RS256 (asymmetric: private key signs, public key verifies), an attacker
+  who knows your public key can craft a token signed with **HS256** using
+  the public key as the HMAC secret. If the server's verification code
+  just uses whatever `alg` the token header claims, it may incorrectly
+  verify the attacker's forged HS256 token as valid using that public key
+  as the shared secret.
+
+**Fix:** always explicitly specify the allowed algorithm(s) when verifying,
+instead of trusting the token's own header:
+
+```js
+jwt.verify(token, publicKey, { algorithms: ["RS256"] });
+```
+
+This way, a token forged with a different algorithm is rejected outright.
+
+### JWT storage: localStorage vs httpOnly cookies
+
+Where you store the JWT on the client matters:
+
+- **`localStorage`** — accessible to any JavaScript running on the page,
+  so it's vulnerable to theft via **XSS** (see the [XSS](#8-xss) section).
+  If an attacker injects a script, they can simply read the token.
+- **`httpOnly` cookies** — not accessible to JavaScript at all, so XSS
+  can't directly read the token. But because the browser attaches cookies
+  automatically, you now need **CSRF protection** for state-changing
+  requests (see the [CSRF](#7-csrf) section).
+
+The tradeoff, in short: `localStorage` trades CSRF risk for XSS risk;
+`httpOnly` cookies trade XSS-based token theft for the need to defend
+against CSRF. Neither is a silver bullet — you still need to defend
+against XSS and CSRF regardless of where the token lives.
 
 ### JWT Authentication Flow
 
@@ -288,6 +330,34 @@ Access Token expires
 Refresh Token sent to refresh endpoint
   ↓
 New Access Token
+```
+
+### Revoking & rotating refresh tokens
+
+A common follow-up: **how would you revoke/rotate refresh tokens?**
+
+Since refresh tokens are long-lived, they need their own protections:
+
+- **Store a hash, not the raw token.** Persist a hash (e.g., SHA-256) of
+  each refresh token server-side, similar to password hashing — if the
+  database is compromised, attackers don't get usable tokens directly.
+- **Rotate on every use.** Each time a refresh token is used to get a new
+  access token, issue a **new** refresh token and invalidate the old one.
+  The client stores the new one and the old one can never be used again.
+- **Detect reuse.** If a refresh token that was already rotated out (i.e.,
+  already used once) is presented again, that's a strong signal it was
+  stolen — treat it as a compromise, and revoke the **entire token
+  family** (all tokens descended from that original login), forcing the
+  user to re-authenticate.
+
+```text
+Login → Refresh Token v1
+           ↓ (used)
+        Refresh Token v2 (v1 now invalid)
+           ↓ (used)
+        Refresh Token v3 (v2 now invalid)
+
+If v1 or v2 is presented again → reuse detected → revoke whole family
 ```
 
 ### Interview question
@@ -551,6 +621,15 @@ res.cookie("session", token, {
 });
 ```
 
+`sameSite: "lax"` still allows the cookie to be sent on **top-level
+cross-site GET navigations** (e.g., a link on another site that navigates
+the browser to yours) — it only blocks it on cross-site subrequests like
+form POSTs, images, and fetch/XHR from another origin. That means `lax`
+alone is **not a complete CSRF defense**. For state-changing requests
+(POST/PUT/PATCH/DELETE), combine `sameSite` with CSRF tokens, or use
+`sameSite: "strict"` where your application's UX can tolerate it (it
+prevents the cookie from being sent even on those top-level navigations).
+
 ### Important distinction
 
 ```text
@@ -645,6 +724,15 @@ ordinary endpoints.
 In distributed systems, rate limiting often needs a shared store such as
 Redis rather than relying only on in-memory counters.
 
+### IP-based limiting isn't enough on its own
+
+Rate-limiting auth endpoints **by IP alone is insufficient** — botnets and
+rotating proxies can spread login attempts across many IPs, each staying
+under the per-IP limit while collectively hammering the same account. For
+login/auth endpoints specifically, also rate-limit **by account/username**
+(and consider combining both: per-IP and per-account limits), so an
+attacker can't just rotate IPs to bypass the limit.
+
 ---
 
 ## 10. Input Validation
@@ -712,6 +800,48 @@ Input validation helps prevent:
 But validation **alone isn't enough**. Database queries should still use
 parameterization/prepared statements, and output should still be handled
 safely.
+
+---
+
+## 11. HTTPS & Security Headers
+
+Beyond application-level auth logic, a few baseline platform-level
+protections are expected in any production Node.js app.
+
+### HTTPS/TLS
+
+All traffic — especially login, tokens, and cookies — should be served
+over **HTTPS**, not plain HTTP. Without TLS, credentials, tokens, and
+session cookies travel in plaintext and can be intercepted (e.g., on
+public Wi-Fi, or by anything sitting on the network path). Cookies marked
+`secure: true` are only ever sent over HTTPS, which is another reason TLS
+is a baseline requirement, not an optional extra.
+
+### Security headers (Helmet, HSTS)
+
+Sensible HTTP response headers reduce the attack surface for things like
+XSS, clickjacking, and protocol downgrade attacks. In Express, the
+[`helmet`](https://www.npmjs.com/package/helmet) middleware sets a
+reasonable set of these by default:
+
+```js
+const helmet = require("helmet");
+
+app.use(helmet());
+```
+
+This includes headers such as:
+
+- **`Strict-Transport-Security` (HSTS)** — tells browsers to only ever
+  connect to your site over HTTPS for a given period, even if the user
+  types `http://` or clicks an `http://` link, preventing downgrade
+  attacks.
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options` / frame-ancestors (clickjacking protection)
+- A baseline `Content-Security-Policy`
+
+None of this replaces the auth/validation/rate-limiting work covered
+above — it's a complementary, cheap-to-add baseline layer.
 
 ---
 

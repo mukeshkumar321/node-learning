@@ -92,7 +92,7 @@ node server.js
 
 ---
 
-# 2. Node.js Architecture
+## 2. Node.js Architecture
 
 A simplified Node.js architecture looks like this:
 
@@ -292,7 +292,7 @@ node --trace-gc server.js
 
 ---
 
-# 4. Single-Threaded and Non-Blocking I/O
+## 4. Single-Threaded and Non-Blocking I/O
 
 ## Single-threaded
 
@@ -418,7 +418,7 @@ Say:
 
 ---
 
-# 5. Synchronous vs Asynchronous
+## 5. Synchronous vs Asynchronous
 
 ## Synchronous
 
@@ -533,7 +533,7 @@ parallel JavaScript execution for CPU-heavy work.
 
 ---
 
-# 6. Node.js Use Cases
+## 6. Node.js Use Cases
 
 Node.js is particularly good for **I/O-intensive applications**.
 

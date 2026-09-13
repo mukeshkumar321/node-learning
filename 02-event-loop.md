@@ -117,21 +117,21 @@ Because `setTimeout()` is asynchronous.
 Conceptually:
 
 ```text
-                 ┌─────────────────┐
-                 │   Call Stack    │
-                 └────────┬────────┘
-                          │
-                          ↓
-                 ┌─────────────────┐
-                 │   Event Loop    │
-                 └────────┬────────┘
-                          │
-             ┌────────────┴────────────┐
-             ↓                         ↓
-       Microtask Queue           Callback Queue
-             │                         │
-       Promise callbacks        setTimeout callback
-       process.nextTick()
+                               ┌─────────────────┐
+                               │   Call Stack    │
+                               └────────┬────────┘
+                                        │
+                                        ↓
+                               ┌─────────────────┐
+                               │   Event Loop    │
+                               └────────┬────────┘
+                                        │
+       ┌────────────────────────────────┼────────────────────┐
+       ↓                                ↓                    ↓
+ nextTick Queue                   Microtask Queue       Callback Queue
+       │                                │                    │
+ process.nextTick()                Promise callbacks   setTimeout callback
+ (runs first, higher priority)
 ```
 
 The Event Loop keeps checking whether the Call Stack is free and determines
@@ -148,7 +148,7 @@ It does **not** mean "run immediately."
 
 ---
 
-# 3. Callback Queue
+## 3. Callback Queue
 
 When an asynchronous callback becomes ready, it can wait in a queue until
 JavaScript is ready to execute it.
@@ -203,8 +203,11 @@ Promise.then()
 Promise.catch()
 Promise.finally()
 queueMicrotask()
-process.nextTick() // Node-specific, special priority
 ```
+
+`process.nextTick()` is **not** part of the microtask queue. It has its own,
+higher-priority queue that Node drains completely before the microtask queue
+runs — see the [`process.nextTick()`](#6-processnexttick) section below.
 
 ### Macrotask / task examples
 
@@ -280,7 +283,7 @@ Therefore:
 
 ---
 
-# 5. Node.js Event Loop Phases ⭐⭐⭐
+## 5. Node.js Event Loop Phases ⭐⭐⭐
 
 Node.js has several event-loop phases.
 
@@ -390,9 +393,34 @@ Event loop
 Be careful with wording here: Node's exact scheduling behavior has nuances,
 but for interviews this priority model is the useful mental model.
 
+### ⚠️ I/O starvation with recursive `process.nextTick()`
+
+Because the nextTick queue is fully drained — including any callbacks it
+adds to itself — **before the event loop is allowed to continue**, calling
+`process.nextTick()` recursively without stopping can starve I/O completely:
+
+```js
+function starve() {
+  process.nextTick(starve);
+}
+
+starve();
+
+setTimeout(() => {
+  console.log("This will never run");
+}, 0);
+```
+
+Since each `nextTick` call schedules another one, the nextTick queue never
+empties, so the event loop never reaches the timers/poll/check phases, and
+the `setTimeout` callback (and any real I/O) never gets a chance to execute.
+This is a classic interview follow-up: unlike `setImmediate()`, which yields
+back to the event loop, unbounded `process.nextTick()` recursion can block
+the whole process.
+
 ---
 
-# 7. `setImmediate()` ⭐⭐⭐
+## 7. `setImmediate()` ⭐⭐⭐
 
 `setImmediate()` schedules a callback for the **Check phase**.
 
@@ -420,7 +448,7 @@ The callback can run in the **Check phase after the poll phase**.
 
 ---
 
-# 8. `setTimeout()`
+## 8. `setTimeout()`
 
 Example:
 
@@ -526,7 +554,7 @@ setTimeout()
 
 ---
 
-# 10. Very Important Interview Example ⭐⭐⭐
+## 10. Very Important Interview Example ⭐⭐⭐
 
 Understand this completely:
 
